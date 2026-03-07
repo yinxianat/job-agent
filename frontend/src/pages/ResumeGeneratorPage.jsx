@@ -19,6 +19,7 @@ import {
   DownloadIcon, FileSpreadsheetIcon, FolderOpenIcon,
   ChevronRightIcon, CheckIcon, Loader2Icon, PlusIcon, XIcon,
   StarIcon, BookmarkIcon, TableIcon, AlertCircleIcon,
+  ClipboardListIcon, ChevronDownIcon, ChevronUpIcon,
 } from 'lucide-react'
 import api from '../services/api'
 import toast from 'react-hot-toast'
@@ -61,6 +62,16 @@ const ACCEPT = {
   'application/pdf': ['.pdf'],
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
   'application/msword': ['.doc'],
+}
+
+const JOB_LOG_ACCEPT = {
+  'application/pdf': ['.pdf'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+  'application/msword': ['.doc'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+  'application/vnd.ms-excel': ['.xls'],
+  'text/plain': ['.txt'],
+  'text/csv': ['.csv'],
 }
 
 // ── Step indicator ────────────────────────────────────────────────────────────
@@ -118,7 +129,7 @@ export default function ResumeGeneratorPage() {
   const [step, setStep] = useState(1)
 
   // ── Step 1 state ──
-  const [resumeFile,    setResumeFile]    = useState(null)
+  const [resumeFiles,   setResumeFiles]   = useState([])   // array of File objects
   const [outputFolder,  setOutputFolder]  = useState('')
   const [folderOpen,    setFolderOpen]    = useState(false)
   const [extraSkills,   setExtraSkills]   = useState(incomingProfile)
@@ -127,6 +138,16 @@ export default function ResumeGeneratorPage() {
     incomingProfile ? incomingProfile.split(',').map(s => s.trim()).filter(Boolean) : []
   )
   const [wishes,        setWishes]        = useState(incomingWishes)
+
+  // ── Job description state ──
+  const descriptionFileRef = useRef(null)
+  const [jobDescription,     setJobDescription]     = useState('')
+  const [descriptionUploading, setDescriptionUploading] = useState(false)
+
+  // ── Job Log state ──
+  const [jobLogText,     setJobLogText]     = useState('')
+  const [jobLogFiles,    setJobLogFiles]    = useState([])
+  const [jobLogExpanded, setJobLogExpanded] = useState(false)
 
   // ── Step 2 state ──
   const [step2Mode,    setStep2Mode]    = useState('search')  // 'search' | 'upload'
@@ -166,12 +187,54 @@ export default function ResumeGeneratorPage() {
 
   // ── Step 1 helpers ────────────────────────────────────────────────────────
   const onDrop = useCallback((accepted) => {
-    if (accepted.length) setResumeFile(accepted[0])
+    if (!accepted.length) return
+    setResumeFiles(prev => {
+      const existingNames = new Set(prev.map(f => f.name))
+      return [...prev, ...accepted.filter(f => !existingNames.has(f.name))]
+    })
   }, [])
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop, accept: ACCEPT, maxFiles: 1, maxSize: 10 * 1024 * 1024,
+    onDrop, accept: ACCEPT, maxFiles: 10, maxSize: 10 * 1024 * 1024,
     onDropRejected: () => toast.error('Invalid file type. Use PDF, DOCX or DOC.'),
   })
+  const removeResumeFile = (idx) => setResumeFiles(prev => prev.filter((_, i) => i !== idx))
+
+  // Job description upload
+  const handleDescriptionFileUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    setDescriptionUploading(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const { data } = await api.post('/api/resume/extract-text', fd)
+      if (data.text?.trim()) {
+        setJobDescription(data.text.trim())
+        toast.success('Job description extracted!')
+      } else {
+        toast.error('Could not extract text from this file')
+      }
+    } catch (err) {
+      toast.error(err.message || 'Failed to extract text')
+    } finally {
+      setDescriptionUploading(false)
+    }
+  }
+
+  // Job Log dropzone
+  const onDropJobLog = useCallback((accepted) => {
+    if (!accepted.length) return
+    setJobLogFiles(prev => {
+      const existingNames = new Set(prev.map(f => f.name))
+      return [...prev, ...accepted.filter(f => !existingNames.has(f.name))]
+    })
+  }, [])
+  const { getRootProps: getJobLogRootProps, getInputProps: getJobLogInputProps, isDragActive: isJobLogDragActive } = useDropzone({
+    onDrop: onDropJobLog, accept: JOB_LOG_ACCEPT, maxFiles: 10, maxSize: 20 * 1024 * 1024,
+    onDropRejected: () => toast.error('Unsupported file type for job log.'),
+  })
+  const removeJobLogFile = (idx) => setJobLogFiles(prev => prev.filter((_, i) => i !== idx))
 
   const addSkillTag = () => {
     const tag = skillInput.trim()
@@ -187,7 +250,7 @@ export default function ResumeGeneratorPage() {
     setExtraSkills(updated.join(', '))
   }
 
-  const step1Valid = resumeFile && outputFolder
+  const step1Valid = resumeFiles.length > 0 && outputFolder
 
   // ── Step 2 helpers ────────────────────────────────────────────────────────
   const setSearchField = (f) => (e) => {
@@ -322,7 +385,7 @@ export default function ResumeGeneratorPage() {
 
   // ── Step 3 — batch generation ────────────────────────────────────────────
   const handleGenerate = async () => {
-    if (!resumeFile || !outputFolder || selectedJobs.size === 0) return
+    if (!resumeFiles.length || !outputFolder || selectedJobs.size === 0) return
     setGenerating(true)
     clearInterval(batchPollRef.current)
 
@@ -335,10 +398,13 @@ export default function ResumeGeneratorPage() {
     ].filter(Boolean).join('\n\n')
 
     const formData = new FormData()
-    formData.append('resume_file', resumeFile)
+    resumeFiles.forEach(f => formData.append('resume_files', f))
     formData.append('output_folder', outputFolder)
     formData.append('extra_skills', combinedSkills)
     formData.append('jobs_json', JSON.stringify(selectedList))
+    formData.append('job_description', jobDescription)
+    formData.append('job_log_text', jobLogText)
+    jobLogFiles.forEach(f => formData.append('job_log_files', f))
 
     try {
       const { data } = await api.post('/api/resume/batch-start', formData, {
@@ -404,43 +470,62 @@ export default function ResumeGeneratorPage() {
       {step === 1 && (
         <div className="space-y-6">
 
-          {/* Resume upload */}
+          {/* Resume upload — multiple files */}
           <div className="card">
             <div className="card-header">
               <h2 className="font-semibold text-gray-800 flex items-center gap-2">
-                <UploadCloudIcon className="w-4 h-4 text-brand-500" /> Upload Your Base Resume
+                <UploadCloudIcon className="w-4 h-4 text-brand-500" /> Upload Resume(s)
               </h2>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Upload one or more resumes — Claude will combine them into one optimized version for each job
+              </p>
             </div>
-            <div className="card-body">
+            <div className="card-body space-y-3">
               <div
                 {...getRootProps()}
-                className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors
-                  ${isDragActive          ? 'border-brand-400 bg-brand-50'
-                  : resumeFile            ? 'border-green-400 bg-green-50'
-                  :                         'border-gray-300 hover:border-brand-400 hover:bg-gray-50'}`}
+                className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors
+                  ${isDragActive            ? 'border-brand-400 bg-brand-50'
+                  : resumeFiles.length > 0  ? 'border-brand-300 bg-brand-50/30'
+                  :                           'border-gray-300 hover:border-brand-400 hover:bg-gray-50'}`}
               >
                 <input {...getInputProps()} />
-                {resumeFile ? (
-                  <div className="flex flex-col items-center gap-2">
-                    <FileTextIcon className="w-10 h-10 text-green-500" />
-                    <p className="font-semibold text-gray-800">{resumeFile.name}</p>
-                    <p className="text-xs text-gray-400">{(resumeFile.size/1024).toFixed(1)} KB</p>
-                    <button type="button"
-                      onClick={(ev) => { ev.stopPropagation(); setResumeFile(null) }}
-                      className="text-xs text-red-500 hover:underline flex items-center gap-1 mt-1">
-                      <TrashIcon className="w-3 h-3" /> Remove
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-2">
-                    <UploadCloudIcon className="w-10 h-10 text-gray-300" />
-                    <p className="text-sm font-medium text-gray-600">
-                      {isDragActive ? 'Drop it here!' : 'Drag & drop or click to browse'}
-                    </p>
-                    <p className="text-xs text-gray-400">PDF, DOCX, DOC — max 10 MB</p>
-                  </div>
-                )}
+                <div className="flex flex-col items-center gap-2">
+                  <UploadCloudIcon className={`w-9 h-9 ${isDragActive ? 'text-brand-400' : 'text-gray-300'}`} />
+                  <p className="text-sm font-medium text-gray-600">
+                    {isDragActive ? 'Drop files here!' : 'Drag & drop or click to add resumes'}
+                  </p>
+                  <p className="text-xs text-gray-400">PDF, DOCX, DOC — max 10 MB each — multiple allowed</p>
+                </div>
               </div>
+
+              {resumeFiles.length > 0 && (
+                <div className="space-y-2">
+                  {resumeFiles.map((f, i) => (
+                    <div key={i} className="flex items-center gap-3 px-3 py-2 bg-brand-50 rounded-xl border border-brand-100">
+                      <FileTextIcon className="w-4 h-4 text-brand-500 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-800 truncate">{f.name}</p>
+                        <p className="text-xs text-gray-400">{(f.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                      {resumeFiles.length > 1 && (
+                        <span className="text-xs text-brand-600 bg-brand-100 px-2 py-0.5 rounded-full shrink-0">
+                          Resume {i + 1}
+                        </span>
+                      )}
+                      <button type="button" onClick={() => removeResumeFile(i)}
+                        className="p-1 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0">
+                        <XIcon className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {resumeFiles.length > 1 && (
+                    <p className="text-xs text-brand-600 flex items-center gap-1">
+                      <SparklesIcon className="w-3 h-3" />
+                      Claude will synthesize all {resumeFiles.length} resumes into one optimized version per job
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -489,6 +574,134 @@ export default function ResumeGeneratorPage() {
                 </p>
               )}
             </div>
+          </div>
+
+          {/* Job Description */}
+          <div className="card">
+            <div className="card-header">
+              <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+                <BriefcaseIcon className="w-4 h-4 text-brand-500" />
+                Job Description Context
+                <span className="badge badge-blue text-xs">Optional</span>
+              </h2>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Add context about the types of roles you're targeting. Claude will use this across all generated resumes.
+              </p>
+            </div>
+            <div className="card-body space-y-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-gray-500">Paste text or upload a file</span>
+                {descriptionUploading ? (
+                  <span className="text-xs text-gray-400 flex items-center gap-1">
+                    <span className="w-3 h-3 border border-gray-400 border-t-transparent rounded-full animate-spin inline-block" />
+                    Extracting…
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => descriptionFileRef.current?.click()}
+                    className="text-xs text-brand-600 hover:text-brand-800 flex items-center gap-1 transition-colors"
+                  >
+                    <UploadCloudIcon className="w-3 h-3" /> Upload PDF/DOC
+                  </button>
+                )}
+                <input
+                  ref={descriptionFileRef}
+                  type="file"
+                  accept=".pdf,.docx,.doc,.txt"
+                  className="hidden"
+                  onChange={handleDescriptionFileUpload}
+                />
+              </div>
+              <textarea
+                value={jobDescription}
+                onChange={e => setJobDescription(e.target.value)}
+                rows={4}
+                placeholder="Paste a sample job description or describe the type of roles you're applying for…"
+                className="input resize-y text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Job History & Work Log (optional, collapsible) */}
+          <div className="card">
+            <button
+              type="button"
+              onClick={() => setJobLogExpanded(v => !v)}
+              className="card-header w-full flex items-center justify-between text-left hover:bg-gray-50 rounded-t-xl transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <ClipboardListIcon className="w-4 h-4 text-brand-500 shrink-0" />
+                <div>
+                  <span className="font-semibold text-gray-800">Job History &amp; Work Log</span>
+                  <span className="ml-2 text-xs text-gray-400 font-normal">(optional)</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {(jobLogText.trim() || jobLogFiles.length > 0) && (
+                  <span className="text-xs bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full font-medium">
+                    {[jobLogText.trim() && 'text', jobLogFiles.length > 0 && `${jobLogFiles.length} file${jobLogFiles.length > 1 ? 's' : ''}`].filter(Boolean).join(' + ')}
+                  </span>
+                )}
+                {jobLogExpanded
+                  ? <ChevronUpIcon className="w-4 h-4 text-gray-400" />
+                  : <ChevronDownIcon className="w-4 h-4 text-gray-400" />
+                }
+              </div>
+            </button>
+
+            {jobLogExpanded && (
+              <div className="card-body space-y-4 pt-0">
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  Provide supplemental context — previous job descriptions, projects, achievements, or any notes on your work history.
+                  Claude will use this to enrich every tailored resume.
+                </p>
+                <div>
+                  <label className="label">Paste or type job history &amp; accomplishments</label>
+                  <textarea
+                    value={jobLogText}
+                    onChange={e => setJobLogText(e.target.value)}
+                    rows={4}
+                    placeholder={`Example:\n• Led migration of legacy monolith to microservices (2022-2023)\n• Reduced API latency by 40% through caching redesign\n• Managed cross-functional team of 8 engineers...`}
+                    className="input resize-y text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="label">Or upload files <span className="text-gray-400 font-normal">(PDF, Word, Excel, TXT, CSV)</span></label>
+                  <div
+                    {...getJobLogRootProps()}
+                    className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-colors
+                      ${isJobLogDragActive ? 'border-brand-400 bg-brand-50' : 'border-gray-200 hover:border-brand-400 hover:bg-gray-50'}`}
+                  >
+                    <input {...getJobLogInputProps()} />
+                    <div className="flex flex-col items-center gap-1.5">
+                      <UploadCloudIcon className={`w-7 h-7 ${isJobLogDragActive ? 'text-brand-400' : 'text-gray-300'}`} />
+                      <p className="text-xs font-medium text-gray-500">
+                        {isJobLogDragActive ? 'Drop files here!' : 'Drag & drop or click to browse'}
+                      </p>
+                      <p className="text-xs text-gray-400">PDF, DOCX, XLSX, XLS, TXT, CSV — up to 20 MB each</p>
+                    </div>
+                  </div>
+                  {jobLogFiles.length > 0 && (
+                    <div className="mt-2 space-y-1.5">
+                      {jobLogFiles.map((f, i) => (
+                        <div key={i} className="flex items-center gap-2.5 px-3 py-2 bg-gray-50 rounded-xl border border-gray-100">
+                          <FileSpreadsheetIcon className="w-4 h-4 text-green-500 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium text-gray-700 truncate">{f.name}</p>
+                            <p className="text-xs text-gray-400">{(f.size / 1024).toFixed(1)} KB</p>
+                          </div>
+                          <button type="button" onClick={() => removeJobLogFile(i)}
+                            className="p-1 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0">
+                            <XIcon className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* What you're looking for */}
@@ -1051,7 +1264,7 @@ export default function ResumeGeneratorPage() {
                 <h2 className="font-semibold text-gray-900 text-lg mb-4">Ready to generate</h2>
                 <div className="grid sm:grid-cols-3 gap-4 mb-6">
                   {[
-                    { label: 'Base resume',   value: resumeFile?.name },
+                    { label: 'Base resume',   value: resumeFiles.length === 1 ? resumeFiles[0]?.name : `${resumeFiles.length} resumes` },
                     { label: 'Output folder', value: outputFolder.split('/').pop() || outputFolder },
                     { label: 'Jobs selected', value: `${selectedJobs.size} position${selectedJobs.size !== 1 ? 's' : ''}` },
                   ].map(item => (

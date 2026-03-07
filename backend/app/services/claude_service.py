@@ -29,16 +29,24 @@ def get_client() -> anthropic.AsyncAnthropic:
 TAILOR_SYSTEM_PROMPT = """You are an expert resume writer and career coach with 15+ years of experience.
 Your task is to tailor a candidate's resume for a specific job posting.
 
-Guidelines:
+CONTENT GUIDELINES:
 - Preserve ALL factual information (dates, job titles, companies, education, certifications)
 - Reorder and rephrase bullet points to best match the job description keywords and requirements
 - Prominently feature any candidate skills/keywords that match the role
 - Use strong action verbs and quantifiable achievements where possible
 - Match the tone and vocabulary of the job description
-- Highlight the skills that directly align with the role
 - Keep the resume to a maximum of 2 pages
-- Output ONLY the final tailored resume in clean plain text (no markdown formatting)
-- Maintain professional formatting with clear section headers in ALL CAPS"""
+
+STRICT FORMATTING RULES (must follow exactly):
+- Section headers: ALL CAPS (e.g. EXPERIENCE, EDUCATION, SKILLS)
+- Accomplishments and responsibilities: ALWAYS use bullet points starting with •
+  Never use paragraphs for describing job duties — every accomplishment gets its own bullet
+- Job/education entry headers: put the title and organisation on the LEFT, and the date range
+  flush to the RIGHT on the same line, separated by at least 4 spaces.
+  Example: "Senior Software Engineer | Acme Corp    Jan 2021 – Present"
+  Example: "B.S. Computer Science | State University    2015 – 2019"
+- Date format: "Mon YYYY – Mon YYYY" or "Mon YYYY – Present" (e.g. "Jan 2020 – Mar 2023")
+- Output ONLY the final resume text — no markdown, no code fences, no explanatory notes"""
 
 
 async def tailor_resume(
@@ -48,13 +56,19 @@ async def tailor_resume(
     location: str,
     job_description: str,
     extra_skills: str = "",
+    job_log: str = "",
 ) -> str:
-    """Tailor the resume for a specific job, optionally injecting extra skills/keywords."""
+    """Tailor the resume for a specific job, optionally injecting extra skills/keywords and job log."""
     client = get_client()
 
     skills_section = (
         f"\n=== CANDIDATE'S ADDITIONAL SKILLS & KEYWORDS TO HIGHLIGHT ===\n{extra_skills}"
         if extra_skills.strip() else ""
+    )
+    job_log_section = (
+        f"\n=== CANDIDATE'S JOB HISTORY & WORK ACCOMPLISHMENTS LOG ===\n"
+        f"(Use this supplemental data to enrich and strengthen the resume)\n{job_log}"
+        if job_log.strip() else ""
     )
 
     user_message = f"""Please tailor the following resume for this specific job opportunity.
@@ -67,6 +81,7 @@ Location: {location}
 === JOB DESCRIPTION ===
 {job_description}
 {skills_section}
+{job_log_section}
 
 === ORIGINAL RESUME ===
 {resume_text}
@@ -78,6 +93,90 @@ Output ONLY the resume content — no introductory text, no explanations."""
         model=settings.CLAUDE_MODEL,
         max_tokens=4096,
         system=TAILOR_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return response.content[0].text
+
+
+# ── Multi-resume synthesis + tailoring ────────────────────────────────────────
+
+MULTI_RESUME_TAILOR_SYSTEM_PROMPT = """You are an expert resume writer and career coach with 15+ years of experience.
+The candidate has provided MULTIPLE versions of their resume. Your task is to:
+1. Extract and consolidate ALL unique experience, skills, projects, and achievements from EVERY provided resume
+2. Synthesize them into ONE comprehensive, unified resume
+3. Tailor that combined resume specifically for the target job
+
+CONTENT GUIDELINES:
+- Include ALL distinct roles, projects, and experiences found across all resumes (no omissions)
+- Where different resumes describe the same role differently, keep the most detailed and accurate version
+- Merge skills lists, removing exact duplicates but preserving all distinct skills
+- Preserve ALL factual information (dates, job titles, companies, education, certifications)
+- Reorder and rephrase bullet points to best match the job description keywords
+- Prominently feature any candidate skills that match the role
+- Use strong action verbs and quantifiable achievements where possible
+- Match the tone and vocabulary of the job description
+- Keep the resume to a maximum of 2 pages
+
+STRICT FORMATTING RULES (must follow exactly):
+- Section headers: ALL CAPS (e.g. EXPERIENCE, EDUCATION, SKILLS)
+- Accomplishments and responsibilities: ALWAYS use bullet points starting with •
+  Never use paragraphs for describing job duties — every accomplishment gets its own bullet
+- Job/education entry headers: put the title and organisation on the LEFT, and the date range
+  flush to the RIGHT on the same line, separated by at least 4 spaces. Bold the font
+  Example: "Senior Software Engineer | Acme Corp    Jan 2021 – Present"
+  Example: "B.S. Computer Science | State University    2015 – 2019"
+- Date format: "Mon YYYY – Mon YYYY" or "Mon YYYY – Present" (e.g. "Jan 2020 – Mar 2023")
+- Output ONLY the final resume text — no markdown, no code fences, no explanatory notes"""
+
+
+async def tailor_resume_from_multiple(
+    resume_texts: List[str],
+    job_title: str,
+    company: str,
+    location: str,
+    job_description: str,
+    extra_skills: str = "",
+    job_log: str = "",
+) -> str:
+    """Combine info from multiple resumes and tailor into one optimised resume for the specific job."""
+    client = get_client()
+
+    skills_section = (
+        f"\n=== CANDIDATE'S ADDITIONAL SKILLS & KEYWORDS TO HIGHLIGHT ===\n{extra_skills}"
+        if extra_skills.strip() else ""
+    )
+    job_log_section = (
+        f"\n=== CANDIDATE'S JOB HISTORY & WORK ACCOMPLISHMENTS LOG ===\n"
+        f"(Use this supplemental data to enrich and strengthen the resume)\n{job_log}"
+        if job_log.strip() else ""
+    )
+
+    resumes_block = "\n\n".join(
+        f"=== RESUME {i + 1} of {len(resume_texts)} ===\n{text}"
+        for i, text in enumerate(resume_texts)
+    )
+
+    user_message = f"""Please synthesise the following {len(resume_texts)} resume versions into ONE optimal resume for this job.
+
+=== JOB DETAILS ===
+Title:    {job_title}
+Company:  {company}
+Location: {location}
+
+=== JOB DESCRIPTION ===
+{job_description}
+{skills_section}
+{job_log_section}
+
+{resumes_block}
+
+Produce a single, fully tailored and comprehensive resume that combines the best elements from all provided resumes and optimises for this role.
+Output ONLY the resume content — no introductory text, no explanations, no commentary about what you combined."""
+
+    response = await client.messages.create(
+        model=settings.CLAUDE_MODEL,
+        max_tokens=4096,
+        system=MULTI_RESUME_TAILOR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
     return response.content[0].text
@@ -152,6 +251,34 @@ COMPANY_RESEARCH_PROMPT = """You are a concise business researcher.
 Given a company name and job title, write a 2-3 sentence description of the company:
 what they do, their industry, approximate size/stage, and any notable culture or values.
 Be factual and professional. Output ONLY the description, no preamble."""
+
+
+async def infer_job_info(description: str) -> Dict[str, str]:
+    """Extract job title and company name from a job description.
+    Returns a dict with 'job_title' and 'company' keys (empty string if not found)."""
+    client = get_client()
+    response = await client.messages.create(
+        model=settings.CLAUDE_MODEL,
+        max_tokens=128,
+        system=(
+            "You are a parser. Extract the job title and company name from the job description. "
+            "Return ONLY a JSON object with exactly two keys: \"job_title\" and \"company\". "
+            "Use your best guess if not explicitly stated. Never leave both blank — infer from context. "
+            "Example: {\"job_title\": \"Senior Software Engineer\", \"company\": \"Acme Corp\"}"
+        ),
+        messages=[{"role": "user", "content": description[:3000]}],
+    )
+    try:
+        raw = response.content[0].text.strip()
+        # Strip markdown fences if present
+        raw = re.sub(r"^```[a-z]*\n?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+        return {
+            "job_title": str(data.get("job_title") or "").strip(),
+            "company":   str(data.get("company")   or "").strip(),
+        }
+    except Exception:
+        return {"job_title": "", "company": ""}
 
 
 async def research_company(company: str, job_title: str) -> str:

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import PyPDF2
 import pdfplumber
+import openpyxl
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -19,7 +20,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib.colors import HexColor
@@ -33,8 +34,10 @@ def _sanitize(name: str) -> str:
 
 
 def build_filename(job_title: str, location: str, company: str) -> str:
-    parts = [_sanitize(job_title), _sanitize(location), _sanitize(company)]
-    return "_".join(p for p in parts if p) or "resume"
+    from datetime import date
+    date_str = date.today().strftime("%Y%m%d")
+    parts = [_sanitize(job_title), _sanitize(company), date_str, "resume"]
+    return "_".join(p for p in parts if p)
 
 
 def _is_section_header(line: str) -> bool:
@@ -52,6 +55,40 @@ def _is_section_header(line: str) -> bool:
 def _is_bullet(line: str) -> bool:
     s = line.strip()
     return s.startswith('•') or s.startswith('-') or s.startswith('*')
+
+
+# Matches "Left text    Jan 2020 – Present" or "Left text    2019 – 2023"
+# The left part and date are separated by 3+ spaces (Claude's right-flush format).
+_DATE_RANGE_RE = re.compile(
+    r'^(.+?)\s{3,}'
+    r'((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+    r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+    r'\.?\s+\d{4}|\d{4})'
+    r'\s*[-–—]\s*'
+    r'((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+    r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+    r'\.?\s+\d{4}|\d{4}|[Pp]resent|[Cc]urrent)\s*$',
+    re.IGNORECASE,
+)
+
+
+def _parse_date_line(line: str):
+    """Return (left_text, date_string) if the line contains a right-aligned date range, else None."""
+    m = _DATE_RANGE_RE.match(line.strip())
+    if m:
+        return m.group(1).strip(), f"{m.group(2)} – {m.group(3)}"
+    return None
+
+
+def _add_right_tab_stop(para, position_twips: int = 9720):
+    """Add a right-aligned tab stop to a DOCX paragraph (9720 twips ≈ 6.75 inches)."""
+    pPr = para._p.get_or_add_pPr()
+    tabs_elem = OxmlElement('w:tabs')
+    tab = OxmlElement('w:tab')
+    tab.set(qn('w:val'), 'right')
+    tab.set(qn('w:pos'), str(position_twips))
+    tabs_elem.append(tab)
+    pPr.append(tabs_elem)
 
 
 def _find_header_block(lines):
@@ -99,12 +136,43 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
     return "\n".join(para.text for para in doc.paragraphs).strip()
 
 
+def extract_text_from_xlsx(file_bytes: bytes) -> str:
+    """Extract all cell text from an Excel workbook, row by row, sheet by sheet."""
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    lines = []
+    for sheet in wb.worksheets:
+        sheet_lines = []
+        for row in sheet.iter_rows(values_only=True):
+            cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+            if cells:
+                sheet_lines.append("  |  ".join(cells))
+        if sheet_lines:
+            lines.append(f"[Sheet: {sheet.title}]")
+            lines.extend(sheet_lines)
+    return "\n".join(lines).strip()
+
+
 def extract_resume_text(file_bytes: bytes, filename: str) -> str:
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
         return extract_text_from_pdf(file_bytes)
     if ext in (".docx", ".doc"):
         return extract_text_from_docx(file_bytes)
+    if ext in (".xlsx", ".xls"):
+        return extract_text_from_xlsx(file_bytes)
+    return file_bytes.decode("utf-8", errors="ignore")
+
+
+def extract_job_log_text(file_bytes: bytes, filename: str) -> str:
+    """Extract text from a job log file (PDF, DOCX, DOC, XLSX, XLS, TXT)."""
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        return extract_text_from_pdf(file_bytes)
+    if ext in (".docx", ".doc"):
+        return extract_text_from_docx(file_bytes)
+    if ext in (".xlsx", ".xls"):
+        return extract_text_from_xlsx(file_bytes)
+    # Plain text, CSV, etc.
     return file_bytes.decode("utf-8", errors="ignore")
 
 
@@ -119,6 +187,8 @@ def write_pdf(tailored_text: str, output_path: str):
     TEXT_CLR    = HexColor('#222222')
     RULE_CLR    = HexColor('#3d5a80')
     LIGHT_RULE  = HexColor('#bbbbbb')
+
+    CONTENT_WIDTH = 6.75 * inch   # 8.5" - 2×0.875" margins
 
     name_style = ParagraphStyle(
         'ResumeName',
@@ -165,6 +235,21 @@ def write_pdf(tailored_text: str, output_path: str):
         spaceAfter=1,
         textColor=TEXT_CLR,
     )
+    date_left_style = ParagraphStyle(
+        'ResumeDateLeft',
+        fontName='Helvetica-Bold',
+        fontSize=10.5,
+        leading=14,
+        textColor=TEXT_CLR,
+    )
+    date_right_style = ParagraphStyle(
+        'ResumeDateRight',
+        fontName='Helvetica-BoldOblique',   # bold + italic
+        fontSize=10,
+        leading=14,
+        alignment=2,           # right-aligned
+        textColor=HexColor('#222222'),
+    )
 
     doc = SimpleDocTemplate(
         output_path,
@@ -207,6 +292,27 @@ def write_pdf(tailored_text: str, output_path: str):
         if _is_bullet(stripped):
             bullet_text = stripped.lstrip('•-* ').strip()
             story.append(Paragraph(f'\u2022\u00a0{bullet_text}', bullet_style))
+            continue
+
+        # ── Job/education entry with right-aligned date ────────────────────────
+        date_parts = _parse_date_line(stripped)
+        if date_parts:
+            left_text, date_text = date_parts
+            tbl = Table(
+                [[Paragraph(left_text, date_left_style),
+                  Paragraph(date_text, date_right_style)]],
+                colWidths=[CONTENT_WIDTH * 0.68, CONTENT_WIDTH * 0.32],
+            )
+            tbl.setStyle(TableStyle([
+                ('ALIGN',         (0, 0), (0, 0), 'LEFT'),
+                ('ALIGN',         (1, 0), (1, 0), 'RIGHT'),
+                ('VALIGN',        (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING',   (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING',  (0, 0), (-1, -1), 0),
+                ('TOPPADDING',    (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+            ]))
+            story.append(tbl)
             continue
 
         story.append(Paragraph(stripped, normal_style))
@@ -304,6 +410,24 @@ def write_docx(tailored_text: str, output_path: str):
             para.paragraph_format.left_indent = Inches(0.2)
             run = para.add_run(bullet_text)
             run.font.size = Pt(10)
+            continue
+
+        # ── Job/education entry with right-aligned date ────────────────────────
+        date_parts = _parse_date_line(stripped)
+        if date_parts:
+            left_text, date_text = date_parts
+            para = doc.add_paragraph()
+            para.paragraph_format.space_after = Pt(1)
+            _add_right_tab_stop(para)          # right tab at ~6.75"
+            run_left = para.add_run(left_text)
+            run_left.bold = True
+            run_left.font.size = Pt(10.5)
+            para.add_run('\t')                 # jump to right-aligned tab
+            run_date = para.add_run(date_text)
+            run_date.font.size = Pt(10)
+            run_date.bold = True
+            run_date.italic = True
+            run_date.font.color.rgb = RGBColor(0x22, 0x22, 0x22)
             continue
 
         # ── Normal line ────────────────────────────────────────────────────────

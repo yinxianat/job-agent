@@ -11,6 +11,7 @@ import ForgotPasswordPage  from './pages/ForgotPasswordPage'
 import ResetPasswordPage   from './pages/ResetPasswordPage'
 import JobSearchPage       from './pages/JobSearchPage'
 import ResumePage          from './pages/ResumePage'
+import ResumeResultPage   from './pages/ResumeResultPage'
 import ResumeGeneratorPage from './pages/ResumeGeneratorPage'
 import ContactPage         from './pages/ContactPage'
 
@@ -31,9 +32,10 @@ export default function App() {
 
             {/* Protected routes */}
             <Route element={<ProtectedRoute />}>
-              <Route path="/jobs"     element={<JobSearchPage />} />
-              <Route path="/resume"   element={<ResumePage />} />
-              <Route path="/generate" element={<ResumeGeneratorPage />} />
+              <Route path="/jobs"           element={<JobSearchPage />} />
+              <Route path="/resume"         element={<ResumePage />} />
+              <Route path="/resume/result"  element={<ResumeResultPage />} />
+              <Route path="/generate"       element={<ResumeGeneratorPage />} />
             </Route>
 
             {/* Fallback */}
