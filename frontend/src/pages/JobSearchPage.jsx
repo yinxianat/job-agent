@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   SearchIcon, ExternalLinkIcon, CalendarIcon, MapPinIcon, BriefcaseIcon,
@@ -113,6 +113,14 @@ export default function JobSearchPage() {
   // dashboard
   const [selected, setSelected] = useState(new Set())
   const [sort,     setSort]     = useState({ field: 'score', dir: 'desc' })
+
+  // ── Cleanup on unmount (user navigates away) ───────────────────────────────
+  useEffect(() => {
+    return () => {
+      // Stop any in-flight polling so we don't keep hitting the API after leaving
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const hasScores = jobs.some(j => j.match_score != null)

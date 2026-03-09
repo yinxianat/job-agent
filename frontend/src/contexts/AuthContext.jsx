@@ -3,6 +3,15 @@ import api from '../services/api'
 
 const AuthContext = createContext(null)
 
+// All sessionStorage keys used across the app
+const SESSION_KEYS = ['resume_tailor_form', 'resume_result']
+
+function clearSessionData() {
+  SESSION_KEYS.forEach(key => {
+    try { sessionStorage.removeItem(key) } catch (_) {}
+  })
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser]       = useState(null)
   const [token, setToken]     = useState(() => localStorage.getItem('ja_token'))
@@ -37,6 +46,8 @@ export function AuthProvider({ children }) {
   }, [token])
 
   const login = useCallback(async (email, password) => {
+    // Clear any stale session data from a previous user before starting a new session
+    clearSessionData()
     const { data } = await api.post('/api/auth/login', { email, password })
     setToken(data.access_token)
     setUser(data.user)
@@ -44,6 +55,8 @@ export function AuthProvider({ children }) {
   }, [])
 
   const signup = useCallback(async (username, email, password) => {
+    // Clear any stale session data from a previous user before starting a new session
+    clearSessionData()
     const { data } = await api.post('/api/auth/signup', { username, email, password })
     setToken(data.access_token)
     setUser(data.user)
@@ -51,6 +64,8 @@ export function AuthProvider({ children }) {
   }, [])
 
   const logout = useCallback(() => {
+    // Clear all ephemeral session data so it doesn't leak to the next user/session
+    clearSessionData()
     setToken(null)
     setUser(null)
   }, [])
