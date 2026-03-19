@@ -131,6 +131,7 @@ export default function ResumeGeneratorPage() {
   // ── Step 1 state ──
   const [resumeFiles,   setResumeFiles]   = useState([])   // array of File objects
   const [outputFolder,  setOutputFolder]  = useState('')
+  const [homeLocation,  setHomeLocation]  = useState('')
   const [folderOpen,    setFolderOpen]    = useState(false)
   const [extraSkills,   setExtraSkills]   = useState(incomingProfile)
   const [skillInput,    setSkillInput]    = useState('')
@@ -401,6 +402,7 @@ export default function ResumeGeneratorPage() {
     resumeFiles.forEach(f => formData.append('resume_files', f))
     formData.append('output_folder', outputFolder)
     formData.append('extra_skills', combinedSkills)
+    formData.append('home_location', homeLocation)
     formData.append('jobs_json', JSON.stringify(selectedList))
     formData.append('job_description', jobDescription)
     formData.append('job_log_text', jobLogText)
@@ -573,6 +575,29 @@ export default function ResumeGeneratorPage() {
                   <code className="bg-gray-100 px-1 rounded">CoverLetter_JobTitle_Location_Company.pdf/.docx</code>
                 </p>
               )}
+            </div>
+          </div>
+
+          {/* Home Location */}
+          <div className="card">
+            <div className="card-header">
+              <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+                <MapPinIcon className="w-4 h-4 text-brand-500" />
+                Your Home Location
+                <span className="badge badge-blue text-xs">Optional</span>
+              </h2>
+            </div>
+            <div className="card-body space-y-2">
+              <p className="text-sm text-gray-500">
+                City and state to include in the contact line of every generated resume.
+              </p>
+              <input
+                type="text"
+                value={homeLocation}
+                onChange={(e) => setHomeLocation(e.target.value)}
+                placeholder="e.g. San Francisco, CA"
+                className="input w-full text-sm"
+              />
             </div>
           </div>
 

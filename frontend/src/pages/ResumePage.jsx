@@ -4,7 +4,7 @@ import { useDropzone } from 'react-dropzone'
 import {
   UploadCloudIcon, FileTextIcon, BrainCircuitIcon,
   DownloadIcon, SparklesIcon, FileSpreadsheetIcon,
-  PencilIcon, XIcon,
+  PencilIcon, XIcon, MapPinIcon,
   ClipboardListIcon, ChevronDownIcon, ChevronUpIcon, UploadIcon,
 } from 'lucide-react'
 import api from '../services/api'
@@ -50,6 +50,7 @@ export default function ResumePage() {
   const [jobDetails, setJobDetails] = useState(saved?.jobDetails ?? {
     job_title: '', company: '', location: '', job_url: '', description: '',
   })
+  const [homeLocation, setHomeLocation] = useState(saved?.homeLocation ?? '')
   const [loading, setLoading] = useState(false)
   const [errors,  setErrors]  = useState({})
 
@@ -68,9 +69,9 @@ export default function ResumePage() {
   // ── Persist text form state to sessionStorage ─────────────────────────────
   useEffect(() => {
     try {
-      sessionStorage.setItem(FORM_KEY, JSON.stringify({ jobDetails, jobLogText, jobLogExpanded }))
+      sessionStorage.setItem(FORM_KEY, JSON.stringify({ jobDetails, jobLogText, jobLogExpanded, homeLocation }))
     } catch (_) {}
-  }, [jobDetails, jobLogText, jobLogExpanded])
+  }, [jobDetails, jobLogText, jobLogExpanded, homeLocation])
 
   // ── Resume dropzone ───────────────────────────────────────────────────────
   const onDrop = useCallback((accepted) => {
@@ -149,6 +150,7 @@ export default function ResumePage() {
     const formData = new FormData()
     resumeFiles.forEach(f => formData.append('resume_files', f))
     Object.entries(jobDetails).forEach(([k, v]) => formData.append(k, v))
+    formData.append('home_location', homeLocation)
     formData.append('job_log_text', jobLogText)
     jobLogFiles.forEach(f => formData.append('job_log_files', f))
 
@@ -337,6 +339,29 @@ export default function ResumePage() {
               </div>
             </div>
           )}
+        </div>
+
+        {/* ── Home Location ── */}
+        <div className="card">
+          <div className="card-header">
+            <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+              <MapPinIcon className="w-4 h-4 text-brand-500" />
+              Your Home Location
+              <span className="badge badge-blue text-xs">Optional</span>
+            </h2>
+          </div>
+          <div className="card-body space-y-2">
+            <p className="text-sm text-gray-500">
+              City and state to include in the contact line of your tailored resume and cover letter.
+            </p>
+            <input
+              type="text"
+              value={homeLocation}
+              onChange={(e) => setHomeLocation(e.target.value)}
+              placeholder="e.g. San Francisco, CA"
+              className="input w-full text-sm"
+            />
+          </div>
         </div>
 
         {/* ── Job Details ── */}

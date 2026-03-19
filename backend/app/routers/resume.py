@@ -65,6 +65,7 @@ async def tailor_resume(
         job_url       = fget("job_url")
         description   = fget("description")
         extra_skills  = fget("extra_skills")
+        home_location = fget("home_location")
         job_log_text  = fget("job_log_text")
         resume_files  = ffiles("resume_files")
         job_log_files = ffiles("job_log_files")
@@ -113,11 +114,13 @@ async def tailor_resume(
         # Tailor: combine multiple resumes or tailor a single one
         if len(resume_texts) == 1:
             tailored_text = await claude_service.tailor_resume(
-                resume_texts[0], job_title, company, location, description, extra_skills, job_log
+                resume_texts[0], job_title, company, location, description,
+                extra_skills, job_log, home_location,
             )
         else:
             tailored_text = await claude_service.tailor_resume_from_multiple(
-                resume_texts, job_title, company, location, description, extra_skills, job_log
+                resume_texts, job_title, company, location, description,
+                extra_skills, job_log, home_location,
             )
 
         # If the user didn't supply title/company, ask Claude to infer them
@@ -128,14 +131,33 @@ async def tailor_resume(
             if not company.strip():
                 company = inferred["company"]
 
-        company_description = await claude_service.research_company(company, job_title)
+        # Run company research + cover letter generation concurrently
+        async def _gen_cover_letter() -> str:
+            if not description.strip():
+                return ""
+            return await claude_service.generate_cover_letter(
+                tailored_text, job_title, company, location, description,
+                company_description="", extra_skills=extra_skills,
+            )
+
+        company_description, cover_letter_text = await asyncio.gather(
+            claude_service.research_company(company, job_title),
+            _gen_cover_letter(),
+        )
+
         filename = resume_service.build_filename(job_title, location, company)
 
         # Only save files to disk when an output folder is specified
+        cover_letter_pdf_path  = None
+        cover_letter_docx_path = None
         if output_folder.strip():
             docx_path, pdf_path = resume_service.save_tailored_resume(
                 tailored_text, output_folder.strip(), job_title, location, company
             )
+            if cover_letter_text:
+                cover_letter_docx_path, cover_letter_pdf_path = resume_service.save_cover_letter(
+                    cover_letter_text, output_folder.strip(), job_title, location, company
+                )
         else:
             docx_path, pdf_path = None, None
 
@@ -153,6 +175,9 @@ async def tailor_resume(
             pdf_path=pdf_path,
             docx_path=docx_path,
             tailored_text=tailored_text,
+            cover_letter_text=cover_letter_text or None,
+            cover_letter_pdf_path=cover_letter_pdf_path,
+            cover_letter_docx_path=cover_letter_docx_path,
         )
 
     except HTTPException:
@@ -195,6 +220,7 @@ async def batch_start(
 
     output_folder    = fget("output_folder")
     extra_skills     = fget("extra_skills")
+    home_location    = fget("home_location")      # optional: candidate's city, state
     jobs_json        = fget("jobs_json")
     job_description  = fget("job_description")   # optional: supplemental JD context
     job_log_text     = fget("job_log_text")       # optional: work history notes
@@ -280,6 +306,7 @@ async def batch_start(
         output_folder=output_folder,
         extra_skills=extra_skills,
         job_log=job_log,
+        home_location=home_location,
         user_id=current_user.id,
     )
 
@@ -331,7 +358,8 @@ async def _run_batch(
     output_folder: str,
     extra_skills: str,
     job_log: str,
-    user_id: int,
+    home_location: str = "",
+    user_id: int = 0,
 ):
     """Process each job sequentially: tailor resume + cover letter + save files."""
     task = _batch_tasks[task_id]
@@ -348,10 +376,12 @@ async def _run_batch(
             async def _tailor():
                 if len(resume_texts) == 1:
                     return await claude_service.tailor_resume(
-                        resume_texts[0], title, company, location, description, extra_skills, job_log
+                        resume_texts[0], title, company, location, description,
+                        extra_skills, job_log, home_location,
                     )
                 return await claude_service.tailor_resume_from_multiple(
-                    resume_texts, title, company, location, description, extra_skills, job_log
+                    resume_texts, title, company, location, description,
+                    extra_skills, job_log, home_location,
                 )
 
             async def _cover(rt: str):
@@ -430,18 +460,29 @@ async def download_resume(path: str, current_user=Depends(get_current_user)):
 
 @router.post("/save-preview")
 async def save_preview(
-    text:          str = Form(...),
-    output_folder: str = Form(...),
-    filename:      str = Form("tailored_resume"),
-    current_user   = Depends(get_current_user),
+    text:             str  = Form(...),
+    output_folder:    str  = Form(...),
+    filename:         str  = Form("tailored_resume"),
+    is_cover_letter:  bool = Form(False),
+    current_user      = Depends(get_current_user),
 ):
     """Save edited preview text as well-formatted DOCX + PDF to the given folder."""
     if not output_folder.strip():
         raise HTTPException(status_code=400, detail="output_folder is required")
     try:
-        docx_path, pdf_path = resume_service.save_from_preview(
-            text, output_folder.strip(), filename.strip() or "tailored_resume"
-        )
+        folder = output_folder.strip()
+        if is_cover_letter:
+            import tempfile
+            safe_name = (filename.strip() or "cover_letter").replace("/", "_")
+            os.makedirs(folder, exist_ok=True)
+            docx_path = os.path.join(folder, f"{safe_name}.docx")
+            pdf_path  = os.path.join(folder, f"{safe_name}.pdf")
+            resume_service.write_docx(text, docx_path, is_cover_letter=True)
+            resume_service.write_pdf(text,  pdf_path,  is_cover_letter=True)
+        else:
+            docx_path, pdf_path = resume_service.save_from_preview(
+                text, folder, filename.strip() or "tailored_resume"
+            )
         return {"docx_path": docx_path, "pdf_path": pdf_path}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -449,12 +490,13 @@ async def save_preview(
 
 @router.post("/render-pdf")
 async def render_pdf_preview(
-    text:        str = Form(...),
-    filename:    str = Form("tailored_resume"),
-    disposition: str = Form("inline"),    # "inline" for preview, "attachment" for download
-    current_user = Depends(get_current_user),
+    text:            str  = Form(...),
+    filename:        str  = Form("tailored_resume"),
+    disposition:     str  = Form("inline"),    # "inline" for preview, "attachment" for download
+    is_cover_letter: bool = Form(False),
+    current_user     = Depends(get_current_user),
 ):
-    """Generate a well-formatted PDF from resume text and return the bytes (no file saved)."""
+    """Generate a well-formatted PDF from resume (or cover letter) text and return the bytes (no file saved)."""
     import io
     import tempfile
 
@@ -462,7 +504,7 @@ async def render_pdf_preview(
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             pdf_path = os.path.join(tmpdir, f"{safe_name}.pdf")
-            resume_service.write_pdf(text, pdf_path)
+            resume_service.write_pdf(text, pdf_path, is_cover_letter=is_cover_letter)
             with open(pdf_path, "rb") as f:
                 pdf_bytes = f.read()
 
@@ -477,11 +519,12 @@ async def render_pdf_preview(
 
 @router.post("/render-docx")
 async def render_docx_download(
-    text:        str = Form(...),
-    filename:    str = Form("tailored_resume"),
-    current_user = Depends(get_current_user),
+    text:            str  = Form(...),
+    filename:        str  = Form("tailored_resume"),
+    is_cover_letter: bool = Form(False),
+    current_user     = Depends(get_current_user),
 ):
-    """Generate a well-formatted DOCX from resume text and return the bytes for download (no file saved)."""
+    """Generate a well-formatted DOCX from resume (or cover letter) text and return the bytes for download (no file saved)."""
     import io
     import tempfile
 
@@ -489,7 +532,7 @@ async def render_docx_download(
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             docx_path = os.path.join(tmpdir, f"{safe_name}.docx")
-            resume_service.write_docx(text, docx_path)
+            resume_service.write_docx(text, docx_path, is_cover_letter=is_cover_letter)
             with open(docx_path, "rb") as f:
                 docx_bytes = f.read()
 

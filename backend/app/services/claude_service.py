@@ -26,25 +26,49 @@ def get_client() -> anthropic.AsyncAnthropic:
 
 # ── Resume tailoring ───────────────────────────────────────────────────────────
 
-TAILOR_SYSTEM_PROMPT = """You are an expert resume writer and career coach with 15+ years of experience.
-Your task is to tailor a candidate's resume for a specific job posting.
+TAILOR_SYSTEM_PROMPT = """You are an elite resume writer and ATS optimisation specialist with 15+ years of experience
+helping candidates land interviews at top companies.
 
-CONTENT GUIDELINES:
-- Preserve ALL factual information (dates, job titles, companies, education, certifications)
-- Reorder and rephrase bullet points to best match the job description keywords and requirements
-- Prominently feature any candidate skills/keywords that match the role
-- Use strong action verbs and quantifiable achievements where possible
-- Match the tone and vocabulary of the job description
-- Keep the resume to a maximum of 2 pages
+Your single most important goal: maximise keyword overlap between the resume and the job description
+so the resume passes ATS filters and resonates immediately with human reviewers.
+
+STEP 1 — KEYWORD EXTRACTION (do this mentally before writing):
+Scan the job description and extract every important term:
+  • Required and preferred technical skills (tools, languages, frameworks, platforms, methodologies)
+  • Soft skills explicitly named (e.g. "cross-functional collaboration", "stakeholder management")
+  • Domain vocabulary (industry-specific terms, product areas, business metrics)
+  • Action verbs used in the JD (e.g. "drive", "scale", "architect", "partner with")
+  • Exact job title and any close variants
+
+STEP 2 — AGGRESSIVE KEYWORD INTEGRATION (rewrite every section with these in mind):
+  • Rephrase every bullet to embed the JD's exact keywords and phrases wherever truthful
+    — prefer the JD's wording over synonyms (e.g. if the JD says "machine learning pipelines",
+    use that exact phrase, not "ML workflows")
+  • Every required skill mentioned in the JD that the candidate possesses MUST appear somewhere
+    in the resume — in bullets, the skills section, or both
+  • Mirror the JD's seniority language (if the JD says "lead", bullets should say "led")
+  • Put the most JD-relevant bullets FIRST within each role
+  • Reorder sections so the most relevant ones appear near the top
+  • The SKILLS section must list every JD keyword the candidate has, using the JD's exact
+    capitalisation and terminology (e.g. "React.js" not "ReactJS" if that's what the JD uses)
+
+CONTENT RULES:
+  • Preserve ALL factual information (dates, job titles, companies, education, certifications)
+  • Never fabricate skills or experience the candidate does not have
+  • Use strong action verbs and quantifiable achievements; add metrics from the original if present
+  • STRICT LENGTH LIMIT: Resume MUST fit within 2 pages. Trim the least-relevant bullets to stay
+    within the limit. Keep at least 2 bullets per role; prioritise recent and most-relevant experience.
 
 STRICT FORMATTING RULES (must follow exactly):
 - Section headers: ALL CAPS (e.g. EXPERIENCE, EDUCATION, SKILLS)
 - Accomplishments and responsibilities: ALWAYS use bullet points starting with •
   Never use paragraphs for describing job duties — every accomplishment gets its own bullet
-- Job/education entry headers: put the title and organisation on the LEFT, and the date range
-  flush to the RIGHT on the same line, separated by at least 4 spaces.
+- Job/education entry headers: Job title and company MUST be on the SAME line as the date,
+  separated from the date by at least 4 spaces.
   Example: "Senior Software Engineer | Acme Corp    Jan 2021 – Present"
   Example: "B.S. Computer Science | State University    2015 – 2019"
+  The renderer will automatically bold the job title, company name, and date — do NOT add
+  any markdown bold markers (**). Just output plain text in the format above.
 - Date format: "Mon YYYY – Mon YYYY" or "Mon YYYY – Present" (e.g. "Jan 2020 – Mar 2023")
 - Output ONLY the final resume text — no markdown, no code fences, no explanatory notes"""
 
@@ -57,6 +81,7 @@ async def tailor_resume(
     job_description: str,
     extra_skills: str = "",
     job_log: str = "",
+    home_location: str = "",
 ) -> str:
     """Tailor the resume for a specific job, optionally injecting extra skills/keywords and job log."""
     client = get_client()
@@ -70,28 +95,39 @@ async def tailor_resume(
         f"(Use this supplemental data to enrich and strengthen the resume)\n{job_log}"
         if job_log.strip() else ""
     )
+    home_location_section = (
+        f"\n=== CANDIDATE HOME LOCATION ===\n{home_location.strip()}"
+        if home_location.strip() else ""
+    )
 
-    user_message = f"""Please tailor the following resume for this specific job opportunity.
+    user_message = f"""Tailor the resume below for maximum keyword match with this job.
 
-=== JOB DETAILS ===
+=== TARGET JOB ===
 Title:    {job_title}
 Company:  {company}
 Location: {location}
 
-=== JOB DESCRIPTION ===
+=== JOB DESCRIPTION (extract every keyword from this) ===
 {job_description}
 {skills_section}
 {job_log_section}
+{home_location_section}
 
 === ORIGINAL RESUME ===
 {resume_text}
 
-Produce a fully tailored version optimised for this role.
-Output ONLY the resume content — no introductory text, no explanations."""
+Instructions:
+1. Extract all keywords, skills, tools, methodologies, and domain terms from the job description.
+2. Rewrite every bullet to embed the JD's exact keywords wherever the candidate's experience supports it.
+3. Ensure the SKILLS section lists every JD keyword the candidate has, using the JD's exact phrasing.
+4. Prioritise the most JD-relevant bullets first within each role.
+5. If a CANDIDATE HOME LOCATION is provided, include it in the contact line at the top of the resume (e.g. "City, State | email | phone").
+6. Keep the resume to 2 pages maximum.
+Output ONLY the resume — no preamble, no commentary."""
 
     response = await client.messages.create(
         model=settings.CLAUDE_MODEL,
-        max_tokens=4096,
+        max_tokens=2500,
         system=TAILOR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
@@ -100,31 +136,50 @@ Output ONLY the resume content — no introductory text, no explanations."""
 
 # ── Multi-resume synthesis + tailoring ────────────────────────────────────────
 
-MULTI_RESUME_TAILOR_SYSTEM_PROMPT = """You are an expert resume writer and career coach with 15+ years of experience.
-The candidate has provided MULTIPLE versions of their resume. Your task is to:
-1. Extract and consolidate ALL unique experience, skills, projects, and achievements from EVERY provided resume
-2. Synthesize them into ONE comprehensive, unified resume
-3. Tailor that combined resume specifically for the target job
+MULTI_RESUME_TAILOR_SYSTEM_PROMPT = """You are an elite resume writer and ATS optimisation specialist with 15+ years of experience
+helping candidates land interviews at top companies.
 
-CONTENT GUIDELINES:
-- Include ALL distinct roles, projects, and experiences found across all resumes (no omissions)
-- Where different resumes describe the same role differently, keep the most detailed and accurate version
-- Merge skills lists, removing exact duplicates but preserving all distinct skills
-- Preserve ALL factual information (dates, job titles, companies, education, certifications)
-- Reorder and rephrase bullet points to best match the job description keywords
-- Prominently feature any candidate skills that match the role
-- Use strong action verbs and quantifiable achievements where possible
-- Match the tone and vocabulary of the job description
-- Keep the resume to a maximum of 2 pages
+The candidate has provided MULTIPLE resume versions. Your task:
+1. Consolidate ALL unique roles, projects, skills, and achievements across every resume (no omissions)
+2. Synthesise into ONE unified resume
+3. Aggressively tailor it for the target job with maximum keyword match
+
+STEP 1 — KEYWORD EXTRACTION (do this mentally before writing):
+Scan the job description and extract every important term:
+  • Required and preferred technical skills (tools, languages, frameworks, platforms, methodologies)
+  • Soft skills explicitly named (e.g. "cross-functional collaboration", "stakeholder management")
+  • Domain vocabulary (industry-specific terms, product areas, business metrics)
+  • Action verbs used in the JD (e.g. "drive", "scale", "architect", "partner with")
+  • Exact job title and any close variants
+
+STEP 2 — AGGRESSIVE KEYWORD INTEGRATION:
+  • Rephrase every bullet to embed the JD's exact keywords and phrases wherever truthful
+    — prefer the JD's wording over synonyms (e.g. if the JD says "machine learning pipelines",
+    use that exact phrase, not "ML workflows")
+  • Every required skill the candidate has MUST appear in the resume — in bullets AND the skills section
+  • Mirror the JD's seniority language; put the most JD-relevant bullets FIRST within each role
+  • The SKILLS section must use the JD's exact capitalisation/terminology for each skill
+  • Where different resume versions describe the same role, keep the most detailed version and
+    rewrite its bullets to maximise JD keyword coverage
+
+CONTENT RULES:
+  • Include ALL distinct roles and experiences from every resume (no omissions)
+  • Preserve ALL factual information (dates, job titles, companies, education, certifications)
+  • Never fabricate skills or experience the candidate does not have
+  • Use strong action verbs and quantifiable achievements
+  • STRICT LENGTH LIMIT: Resume MUST fit within 2 pages. Trim least-relevant bullets to stay
+    within the limit. Keep at least 2 bullets per role; prioritise recent and most-relevant experience.
 
 STRICT FORMATTING RULES (must follow exactly):
 - Section headers: ALL CAPS (e.g. EXPERIENCE, EDUCATION, SKILLS)
 - Accomplishments and responsibilities: ALWAYS use bullet points starting with •
   Never use paragraphs for describing job duties — every accomplishment gets its own bullet
-- Job/education entry headers: put the title and organisation on the LEFT, and the date range
-  flush to the RIGHT on the same line, separated by at least 4 spaces. Bold the font
+- Job/education entry headers: Job title and company MUST be on the SAME line as the date,
+  separated from the date by at least 4 spaces.
   Example: "Senior Software Engineer | Acme Corp    Jan 2021 – Present"
   Example: "B.S. Computer Science | State University    2015 – 2019"
+  The renderer will automatically bold the job title, company name, and date — do NOT add
+  any markdown bold markers (**). Just output plain text in the format above.
 - Date format: "Mon YYYY – Mon YYYY" or "Mon YYYY – Present" (e.g. "Jan 2020 – Mar 2023")
 - Output ONLY the final resume text — no markdown, no code fences, no explanatory notes"""
 
@@ -137,6 +192,7 @@ async def tailor_resume_from_multiple(
     job_description: str,
     extra_skills: str = "",
     job_log: str = "",
+    home_location: str = "",
 ) -> str:
     """Combine info from multiple resumes and tailor into one optimised resume for the specific job."""
     client = get_client()
@@ -150,32 +206,44 @@ async def tailor_resume_from_multiple(
         f"(Use this supplemental data to enrich and strengthen the resume)\n{job_log}"
         if job_log.strip() else ""
     )
+    home_location_section = (
+        f"\n=== CANDIDATE HOME LOCATION ===\n{home_location.strip()}"
+        if home_location.strip() else ""
+    )
 
     resumes_block = "\n\n".join(
         f"=== RESUME {i + 1} of {len(resume_texts)} ===\n{text}"
         for i, text in enumerate(resume_texts)
     )
 
-    user_message = f"""Please synthesise the following {len(resume_texts)} resume versions into ONE optimal resume for this job.
+    user_message = f"""Synthesise the {len(resume_texts)} resumes below into ONE resume with maximum keyword match for this job.
 
-=== JOB DETAILS ===
+=== TARGET JOB ===
 Title:    {job_title}
 Company:  {company}
 Location: {location}
 
-=== JOB DESCRIPTION ===
+=== JOB DESCRIPTION (extract every keyword from this) ===
 {job_description}
 {skills_section}
 {job_log_section}
+{home_location_section}
 
 {resumes_block}
 
-Produce a single, fully tailored and comprehensive resume that combines the best elements from all provided resumes and optimises for this role.
-Output ONLY the resume content — no introductory text, no explanations, no commentary about what you combined."""
+Instructions:
+1. Consolidate ALL unique roles, skills, and achievements from every resume (no omissions).
+2. Extract all keywords, skills, tools, methodologies, and domain terms from the job description.
+3. Rewrite every bullet to embed the JD's exact keywords wherever the candidate's experience supports it.
+4. Ensure the SKILLS section lists every JD keyword the candidate has, using the JD's exact phrasing.
+5. Prioritise the most JD-relevant bullets first within each role.
+6. If a CANDIDATE HOME LOCATION is provided, include it in the contact line at the top of the resume (e.g. "City, State | email | phone").
+7. Keep the resume to 2 pages maximum.
+Output ONLY the resume — no preamble, no commentary, no explanation of what you combined."""
 
     response = await client.messages.create(
         model=settings.CLAUDE_MODEL,
-        max_tokens=4096,
+        max_tokens=2500,
         system=MULTI_RESUME_TAILOR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )

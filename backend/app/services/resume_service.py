@@ -178,9 +178,11 @@ def extract_job_log_text(file_bytes: bytes, filename: str) -> str:
 
 # ── PDF generation ─────────────────────────────────────────────────────────────
 
-def write_pdf(tailored_text: str, output_path: str):
-    """Write a well-formatted resume PDF using ReportLab."""
-
+def _build_pdf_story(lines, name_idx, contact_idxs, compact: bool = False):
+    """
+    Build a ReportLab story from resume lines.
+    compact=True uses tighter font sizes and spacing to fit within 2 pages.
+    """
     DARK_NAVY   = HexColor('#1a2744')
     SECTION_CLR = HexColor('#2c3e50')
     MID_GRAY    = HexColor('#555555')
@@ -190,11 +192,18 @@ def write_pdf(tailored_text: str, output_path: str):
 
     CONTENT_WIDTH = 6.75 * inch   # 8.5" - 2×0.875" margins
 
+    # Compact mode reduces font sizes and tightens vertical spacing
+    body_fs   = 9.5  if compact else 10
+    body_lead = 12   if compact else 14
+    sec_fs    = 10   if compact else 10.5
+    sec_sb    = 9    if compact else 14
+    name_fs   = 16   if compact else 18
+
     name_style = ParagraphStyle(
         'ResumeName',
         fontName='Helvetica-Bold',
-        fontSize=18,
-        leading=22,
+        fontSize=name_fs,
+        leading=name_fs + 4,
         alignment=1,        # centered
         textColor=DARK_NAVY,
         spaceAfter=3,
@@ -202,8 +211,8 @@ def write_pdf(tailored_text: str, output_path: str):
     contact_style = ParagraphStyle(
         'ResumeContact',
         fontName='Helvetica',
-        fontSize=9,
-        leading=13,
+        fontSize=8.5 if compact else 9,
+        leading=12 if compact else 13,
         alignment=1,        # centered
         textColor=MID_GRAY,
         spaceAfter=1,
@@ -211,17 +220,17 @@ def write_pdf(tailored_text: str, output_path: str):
     section_style = ParagraphStyle(
         'ResumeSection',
         fontName='Helvetica-Bold',
-        fontSize=10.5,
-        leading=14,
+        fontSize=sec_fs,
+        leading=sec_fs + 3,
         textColor=SECTION_CLR,
-        spaceBefore=14,
+        spaceBefore=sec_sb,
         spaceAfter=2,
     )
     bullet_style = ParagraphStyle(
         'ResumeBullet',
         fontName='Helvetica',
-        fontSize=10,
-        leading=14,
+        fontSize=body_fs,
+        leading=body_lead,
         leftIndent=14,
         firstLineIndent=0,
         spaceAfter=1,
@@ -230,48 +239,48 @@ def write_pdf(tailored_text: str, output_path: str):
     normal_style = ParagraphStyle(
         'ResumeNormal',
         fontName='Helvetica',
-        fontSize=10,
-        leading=14,
+        fontSize=body_fs,
+        leading=body_lead,
+        spaceAfter=1,
+        textColor=TEXT_CLR,
+    )
+    subtitle_style = ParagraphStyle(
+        'ResumeSubtitle',
+        fontName='Helvetica-BoldOblique',   # bold + italic — company / location subtitle
+        fontSize=body_fs,
+        leading=body_lead,
         spaceAfter=1,
         textColor=TEXT_CLR,
     )
     date_left_style = ParagraphStyle(
         'ResumeDateLeft',
         fontName='Helvetica-Bold',
-        fontSize=10.5,
-        leading=14,
+        fontSize=sec_fs,
+        leading=body_lead,
         textColor=TEXT_CLR,
     )
     date_right_style = ParagraphStyle(
         'ResumeDateRight',
         fontName='Helvetica-BoldOblique',   # bold + italic
-        fontSize=10,
-        leading=14,
+        fontSize=body_fs,
+        leading=body_lead,
         alignment=2,           # right-aligned
         textColor=HexColor('#222222'),
     )
 
-    doc = SimpleDocTemplate(
-        output_path,
-        pagesize=letter,
-        leftMargin=0.875 * inch,
-        rightMargin=0.875 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
-    )
-
-    lines = tailored_text.splitlines()
-    name_idx, contact_idxs = _find_header_block(lines)
-
     story = []
+    prev_was_date_entry = False
+
     for i, line in enumerate(lines):
         stripped = line.strip()
 
         if not stripped:
-            story.append(Spacer(1, 4))
+            story.append(Spacer(1, 3 if compact else 4))
+            # blank lines do not clear the "prev_was_date_entry" flag
             continue
 
         if i == name_idx:
+            prev_was_date_entry = False
             story.append(Paragraph(stripped, name_style))
             story.append(HRFlowable(
                 width="100%", thickness=1.5, color=RULE_CLR, spaceAfter=3, spaceBefore=0,
@@ -279,10 +288,12 @@ def write_pdf(tailored_text: str, output_path: str):
             continue
 
         if i in contact_idxs:
+            prev_was_date_entry = False
             story.append(Paragraph(stripped, contact_style))
             continue
 
         if _is_section_header(stripped):
+            prev_was_date_entry = False
             story.append(Paragraph(stripped, section_style))
             story.append(HRFlowable(
                 width="100%", thickness=0.5, color=LIGHT_RULE, spaceAfter=4, spaceBefore=0,
@@ -290,6 +301,7 @@ def write_pdf(tailored_text: str, output_path: str):
             continue
 
         if _is_bullet(stripped):
+            prev_was_date_entry = False
             bullet_text = stripped.lstrip('•-* ').strip()
             story.append(Paragraph(f'\u2022\u00a0{bullet_text}', bullet_style))
             continue
@@ -297,6 +309,7 @@ def write_pdf(tailored_text: str, output_path: str):
         # ── Job/education entry with right-aligned date ────────────────────────
         date_parts = _parse_date_line(stripped)
         if date_parts:
+            prev_was_date_entry = True
             left_text, date_text = date_parts
             tbl = Table(
                 [[Paragraph(left_text, date_left_style),
@@ -315,9 +328,89 @@ def write_pdf(tailored_text: str, output_path: str):
             story.append(tbl)
             continue
 
+        # ── Subtitle: non-bullet line immediately following a date entry ──────
+        # e.g. company name or location on its own line → bold-italic
+        if prev_was_date_entry:
+            prev_was_date_entry = False
+            story.append(Paragraph(stripped, subtitle_style))
+            continue
+
+        prev_was_date_entry = False
         story.append(Paragraph(stripped, normal_style))
 
-    doc.build(story)
+    return story
+
+
+def _build_cover_letter_pdf_story(lines, text_color, body_fs=10, body_lead=15):
+    """Build a ReportLab story for a cover letter — plain left-aligned prose."""
+    para_style = ParagraphStyle(
+        'CLParagraph',
+        fontName='Helvetica',
+        fontSize=body_fs,
+        leading=body_lead,
+        textColor=text_color,
+        spaceAfter=8,
+        alignment=0,   # LEFT
+    )
+    story = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            story.append(Spacer(1, 6))
+        else:
+            story.append(Paragraph(stripped, para_style))
+    return story
+
+
+def write_pdf(tailored_text: str, output_path: str, is_cover_letter: bool = False):
+    """
+    Write a well-formatted resume (or cover letter) PDF using ReportLab.
+    When is_cover_letter=True, renders plain left-aligned prose instead of
+    the resume-specific multi-column/section layout.
+    For resumes, automatically retries with compact settings if > 2 pages.
+    """
+    TEXT_CLR = HexColor('#222222')
+
+    if is_cover_letter:
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=letter,
+            leftMargin=1.0 * inch,
+            rightMargin=1.0 * inch,
+            topMargin=1.0 * inch,
+            bottomMargin=1.0 * inch,
+        )
+        lines = tailored_text.splitlines()
+        story = _build_cover_letter_pdf_story(lines, TEXT_CLR)
+        doc.build(story)
+        return
+
+    def _build(compact: bool):
+        top_margin = (0.65 if compact else 0.75) * inch
+        bot_margin = (0.65 if compact else 0.75) * inch
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=letter,
+            leftMargin=0.875 * inch,
+            rightMargin=0.875 * inch,
+            topMargin=top_margin,
+            bottomMargin=bot_margin,
+        )
+        lines = tailored_text.splitlines()
+        name_idx, contact_idxs = _find_header_block(lines)
+        story = _build_pdf_story(lines, name_idx, contact_idxs, compact=compact)
+        doc.build(story)
+
+    # First pass — normal sizing
+    _build(compact=False)
+
+    # Check page count; if > 2, retry with compact settings
+    try:
+        reader = PyPDF2.PdfReader(output_path)
+        if len(reader.pages) > 2:
+            _build(compact=True)
+    except Exception:
+        pass  # If the check fails, keep the first build
 
 
 # ── DOCX generation ────────────────────────────────────────────────────────────
@@ -335,12 +428,42 @@ def _add_paragraph_bottom_border(para):
     pPr.append(pBdr)
 
 
-def write_docx(tailored_text: str, output_path: str):
-    """Write a well-formatted resume DOCX using python-docx."""
+def write_docx(tailored_text: str, output_path: str, is_cover_letter: bool = False):
+    """
+    Write a well-formatted resume or cover letter DOCX using python-docx.
+    When is_cover_letter=True, renders plain left-aligned prose instead of
+    the resume-specific section/header layout.
+    """
     lines = tailored_text.splitlines()
-    name_idx, contact_idxs = _find_header_block(lines)
 
     doc = Document()
+
+    if is_cover_letter:
+        # Cover letter: generous margins, plain left-aligned paragraphs
+        for section in doc.sections:
+            section.top_margin    = Inches(1.0)
+            section.bottom_margin = Inches(1.0)
+            section.left_margin   = Inches(1.0)
+            section.right_margin  = Inches(1.0)
+        normal_style = doc.styles['Normal']
+        normal_style.font.name = 'Calibri'
+        normal_style.font.size = Pt(11)
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                p = doc.add_paragraph()
+                p.paragraph_format.space_after  = Pt(0)
+                p.paragraph_format.space_before = Pt(0)
+            else:
+                para = doc.add_paragraph()
+                para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                para.paragraph_format.space_after = Pt(6)
+                run = para.add_run(stripped)
+                run.font.size = Pt(11)
+        doc.save(output_path)
+        return
+
+    name_idx, contact_idxs = _find_header_block(lines)
 
     # Page margins
     for section in doc.sections:
@@ -354,11 +477,13 @@ def write_docx(tailored_text: str, output_path: str):
     normal_style.font.name = 'Calibri'
     normal_style.font.size = Pt(10.5)
 
+    prev_was_date_entry = False
+
     for i, line in enumerate(lines):
         stripped = line.strip()
 
         if not stripped:
-            # Minimal spacer paragraph
+            # Minimal spacer paragraph; blank lines don't clear prev_was_date_entry
             p = doc.add_paragraph()
             p.paragraph_format.space_after  = Pt(0)
             p.paragraph_format.space_before = Pt(0)
@@ -366,6 +491,7 @@ def write_docx(tailored_text: str, output_path: str):
 
         # ── Name ──────────────────────────────────────────────────────────────
         if i == name_idx:
+            prev_was_date_entry = False
             para = doc.add_paragraph()
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             para.paragraph_format.space_after = Pt(2)
@@ -379,6 +505,7 @@ def write_docx(tailored_text: str, output_path: str):
 
         # ── Contact / header block ─────────────────────────────────────────────
         if i in contact_idxs:
+            prev_was_date_entry = False
             para = doc.add_paragraph()
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             para.paragraph_format.space_after = Pt(1)
@@ -389,6 +516,7 @@ def write_docx(tailored_text: str, output_path: str):
 
         # ── Section header (ALL-CAPS) ──────────────────────────────────────────
         if _is_section_header(stripped):
+            prev_was_date_entry = False
             para = doc.add_paragraph()
             para.paragraph_format.space_before = Pt(12)
             para.paragraph_format.space_after  = Pt(3)
@@ -401,6 +529,7 @@ def write_docx(tailored_text: str, output_path: str):
 
         # ── Bullet ─────────────────────────────────────────────────────────────
         if _is_bullet(stripped):
+            prev_was_date_entry = False
             bullet_text = stripped.lstrip('•-* ').strip()
             try:
                 para = doc.add_paragraph(style='List Bullet')
@@ -415,6 +544,7 @@ def write_docx(tailored_text: str, output_path: str):
         # ── Job/education entry with right-aligned date ────────────────────────
         date_parts = _parse_date_line(stripped)
         if date_parts:
+            prev_was_date_entry = True
             left_text, date_text = date_parts
             para = doc.add_paragraph()
             para.paragraph_format.space_after = Pt(1)
@@ -430,7 +560,21 @@ def write_docx(tailored_text: str, output_path: str):
             run_date.font.color.rgb = RGBColor(0x22, 0x22, 0x22)
             continue
 
+        # ── Subtitle: non-bullet line immediately following a date entry ──────
+        # e.g. company name or location on its own line → bold-italic
+        if prev_was_date_entry:
+            prev_was_date_entry = False
+            para = doc.add_paragraph()
+            para.paragraph_format.space_after = Pt(1)
+            run = para.add_run(stripped)
+            run.bold = True
+            run.italic = True
+            run.font.size = Pt(10)
+            run.font.color.rgb = RGBColor(0x22, 0x22, 0x22)
+            continue
+
         # ── Normal line ────────────────────────────────────────────────────────
+        prev_was_date_entry = False
         para = doc.add_paragraph()
         para.paragraph_format.space_after = Pt(1)
         run = para.add_run(stripped)
@@ -470,8 +614,8 @@ def save_cover_letter(
     base_name = "CoverLetter_" + build_filename(job_title, location, company)
     docx_path = os.path.join(output_folder, f"{base_name}.docx")
     pdf_path  = os.path.join(output_folder, f"{base_name}.pdf")
-    write_docx(cover_letter_text, docx_path)
-    write_pdf(cover_letter_text,  pdf_path)
+    write_docx(cover_letter_text, docx_path, is_cover_letter=True)
+    write_pdf(cover_letter_text,  pdf_path,  is_cover_letter=True)
     return docx_path, pdf_path
 
 

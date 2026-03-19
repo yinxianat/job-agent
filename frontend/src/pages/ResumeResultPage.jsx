@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import {
   FileTextIcon, ArrowLeftIcon, PencilIcon, EyeIcon,
   CopyIcon, PrinterIcon, XIcon, CheckIcon, SaveIcon,
-  SparklesIcon,
+  SparklesIcon, MailIcon, DownloadIcon,
 } from 'lucide-react'
 import api from '../services/api'
 import toast from 'react-hot-toast'
@@ -63,50 +63,66 @@ function ResumeHtmlPreview({ text }) {
     else contactIdxs.add(i)
   }
 
+  // Track whether the previous content line was a date-range entry.
+  // Used to detect subtitle lines (e.g. company name on its own line) and
+  // render them bold-italic, mirroring the PDF/DOCX subtitle_style.
+  let prevWasDateEntry = false
+
   const elements = lines.map((line, i) => {
     const s = line.trim()
 
     // ── Blank spacer — mirrors Spacer(1, 4) ──────────────────────────────────
+    // Blank lines do NOT reset prevWasDateEntry (same as backend logic)
     if (!s) return <div key={i} style={{ height: '4pt' }} />
 
     // ── Candidate name — 18pt Helvetica-Bold, centered, dark navy ────────────
-    if (i === nameIdx) return (
-      <div key={i} style={{ textAlign: 'center', marginBottom: '3pt' }}>
-        <div style={{
-          fontFamily: 'Helvetica, Arial, sans-serif',
-          fontSize: '18pt', fontWeight: 700,
-          color: '#1a2744', lineHeight: '22pt',
-        }}>{s}</div>
-        {/* HRFlowable: 1.5pt, #3d5a80 */}
-        <div style={{ borderTop: '1.5pt solid #3d5a80', marginTop: '3pt' }} />
-      </div>
-    )
+    if (i === nameIdx) {
+      prevWasDateEntry = false
+      return (
+        <div key={i} style={{ textAlign: 'center', marginBottom: '3pt' }}>
+          <div style={{
+            fontFamily: 'Helvetica, Arial, sans-serif',
+            fontSize: '18pt', fontWeight: 700,
+            color: '#1a2744', lineHeight: '22pt',
+          }}>{s}</div>
+          {/* HRFlowable: 1.5pt, #3d5a80 */}
+          <div style={{ borderTop: '1.5pt solid #3d5a80', marginTop: '3pt' }} />
+        </div>
+      )
+    }
 
     // ── Contact / header block — 9pt, centered, mid-gray ─────────────────────
-    if (contactIdxs.has(i)) return (
-      <div key={i} style={{
-        fontFamily: 'Helvetica, Arial, sans-serif',
-        fontSize: '9pt', textAlign: 'center',
-        color: '#555555', lineHeight: '13pt', marginBottom: '1pt',
-      }}>{s}</div>
-    )
+    if (contactIdxs.has(i)) {
+      prevWasDateEntry = false
+      return (
+        <div key={i} style={{
+          fontFamily: 'Helvetica, Arial, sans-serif',
+          fontSize: '9pt', textAlign: 'center',
+          color: '#555555', lineHeight: '13pt', marginBottom: '1pt',
+        }}>{s}</div>
+      )
+    }
 
     // ── ALL-CAPS section header — 10.5pt bold, #2c3e50, underline rule ────────
-    if (isSectionHeader(s)) return (
-      <div key={i} style={{ marginTop: '14pt', marginBottom: '2pt' }}>
-        <div style={{
-          fontFamily: 'Helvetica, Arial, sans-serif',
-          fontSize: '10.5pt', fontWeight: 700,
-          color: '#2c3e50', letterSpacing: '0.06em',
-        }}>{s}</div>
-        {/* HRFlowable: 0.5pt, #bbbbbb */}
-        <div style={{ borderTop: '0.5pt solid #bbbbbb', marginTop: '2pt' }} />
-      </div>
-    )
+    if (isSectionHeader(s)) {
+      prevWasDateEntry = false
+      return (
+        <div key={i} style={{ marginTop: '14pt', marginBottom: '2pt' }}>
+          <div style={{
+            fontFamily: 'Helvetica, Arial, sans-serif',
+            fontSize: '10.5pt', fontWeight: 700,
+            color: '#2c3e50', letterSpacing: '0.06em',
+          }}>{s}</div>
+          {/* HRFlowable: 0.5pt, #bbbbbb */}
+          <div style={{ borderTop: '0.5pt solid #bbbbbb', marginTop: '2pt' }} />
+        </div>
+      )
+    }
 
     // ── Job/edu entry with right-aligned date — two-column table ──────────────
     const dm = DATE_RANGE_RE.exec(s)
     if (dm) {
+      prevWasDateEntry = true
       const leftText = dm[1].trim()
       const dateText = `${dm[2]} – ${dm[3]}`
       return (
@@ -133,6 +149,7 @@ function ResumeHtmlPreview({ text }) {
 
     // ── Bullet point — 10pt, leftIndent 14pt ─────────────────────────────────
     if (s.startsWith('•') || s.startsWith('-') || s.startsWith('*')) {
+      prevWasDateEntry = false
       const bulletText = s.replace(/^[•\-*]\s*/, '')
       return (
         <div key={i} style={{
@@ -147,7 +164,22 @@ function ResumeHtmlPreview({ text }) {
       )
     }
 
+    // ── Subtitle: non-bullet line immediately after a date entry ─────────────
+    // Mirrors backend subtitle_style (Helvetica-BoldOblique) — used for
+    // company name / location when they appear on their own line.
+    if (prevWasDateEntry) {
+      prevWasDateEntry = false
+      return (
+        <div key={i} style={{
+          fontFamily: 'Helvetica, Arial, sans-serif',
+          fontSize: '10pt', fontWeight: 700, fontStyle: 'italic',
+          color: '#222222', lineHeight: '14pt', marginBottom: '1pt',
+        }}>{s}</div>
+      )
+    }
+
     // ── Normal line — 10pt Helvetica ─────────────────────────────────────────
+    prevWasDateEntry = false
     return (
       <div key={i} style={{
         fontFamily: 'Helvetica, Arial, sans-serif',
@@ -183,6 +215,49 @@ function ResumeHtmlPreview({ text }) {
   )
 }
 
+// ── Cover Letter HTML preview ─────────────────────────────────────────────────
+// Plain left-aligned prose, matching write_pdf(is_cover_letter=True) formatting.
+function CoverLetterHtmlPreview({ text }) {
+  if (!text?.trim()) {
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: '#e8eaed', padding: '32px' }}>
+        <p style={{ color: '#9ca3af', fontSize: '14px' }}>No cover letter text available.</p>
+      </div>
+    )
+  }
+
+  const lines = text.split('\n')
+  const elements = lines.map((line, i) => {
+    const s = line.trim()
+    if (!s) return <div key={i} style={{ height: '10pt' }} />
+    return (
+      <div key={i} style={{
+        fontFamily: "'Calibri', 'Arial', sans-serif",
+        fontSize: '11pt', color: '#222222',
+        lineHeight: '16pt', marginBottom: '2pt',
+      }}>{s}</div>
+    )
+  })
+
+  return (
+    <div style={{ background: '#e8eaed', padding: '32px', overflow: 'auto', flex: 1, minHeight: 0 }}>
+      {/* Paper page — same dimensions as resume preview */}
+      <div style={{
+        background: 'white',
+        boxShadow: '0 2px 12px rgba(0,0,0,0.18)',
+        width: '816px',
+        minHeight: '1056px',
+        margin: '0 auto',
+        padding: '96px 96px',   /* 1in margins matching cover letter PDF */
+        boxSizing: 'border-box',
+      }}>
+        {elements}
+      </div>
+    </div>
+  )
+}
+
 // ── Main Result Page ──────────────────────────────────────────────────────────
 export default function ResumeResultPage() {
   const location = useLocation()
@@ -202,6 +277,10 @@ export default function ResumeResultPage() {
     return null
   })
 
+  // Tab state — 'resume' | 'cover_letter'
+  const coverLetterText = resume?.cover_letter_text || ''
+  const [activeTab, setActiveTab] = useState('resume')
+
   // Editing state
   const editorRef     = useRef(null)
   const editorHtmlRef = useRef(null)
@@ -213,9 +292,13 @@ export default function ResumeResultPage() {
   const [savedFolder, setSavedFolder] = useState('')
   const [savedType,   setSavedType]   = useState(null) // 'pdf' | 'docx' | null
 
-  // Folder picker
+  // Cover letter download state
+  const [clDownloading, setClDownloading] = useState(null) // 'pdf' | 'docx' | null
+
+  // Folder picker — shared between resume and cover letter saves
   const [folderPickerOpen,  setFolderPickerOpen]  = useState(false)
   const [pendingSaveFormat, setPendingSaveFormat] = useState(null)
+  const [pendingSaveMode,   setPendingSaveMode]   = useState('resume') // 'resume' | 'cover_letter'
 
   // Rich-text toolbar
   const FONTS = [
@@ -311,8 +394,9 @@ export default function ResumeResultPage() {
     win.document.close(); win.focus(); win.print()
   }
 
-  const handleSave = (format) => {
+  const handleSave = (format, mode = 'resume') => {
     setPendingSaveFormat(format)
+    setPendingSaveMode(mode)
     setFolderPickerOpen(true)
   }
 
@@ -322,18 +406,54 @@ export default function ResumeResultPage() {
     setIsSaving(true)
     try {
       const fd = new FormData()
-      fd.append('text',          getCurrentText())
-      fd.append('output_folder', folder)
-      fd.append('filename',      defaultFilename)
+      const isCL = pendingSaveMode === 'cover_letter'
+      fd.append('text',            isCL ? coverLetterText : getCurrentText())
+      fd.append('output_folder',   folder)
+      fd.append('filename',        isCL ? `CoverLetter_${defaultFilename}` : defaultFilename)
+      fd.append('is_cover_letter', isCL ? 'true' : 'false')
       await api.post('/api/resume/save-preview', fd)
       setSavedType(pendingSaveFormat)
-      toast.success(`Saved ${pendingSaveFormat?.toUpperCase()} to ${folder}`)
+      const label = isCL ? 'Cover letter' : pendingSaveFormat?.toUpperCase()
+      toast.success(`${label} saved to ${folder}`)
       setTimeout(() => setSavedType(null), 4000)
     } catch (err) {
       toast.error(err.message || 'Failed to save file')
     } finally {
       setIsSaving(false)
       setPendingSaveFormat(null)
+    }
+  }
+
+  // Download cover letter directly to browser (no folder picker)
+  const handleDownloadCoverLetter = async (format) => {
+    setClDownloading(format)
+    try {
+      const fd = new FormData()
+      fd.append('text',            coverLetterText)
+      fd.append('filename',        `CoverLetter_${defaultFilename}`)
+      fd.append('is_cover_letter', 'true')
+      if (format === 'pdf') {
+        fd.append('disposition', 'attachment')
+        const res = await api.post('/api/resume/render-pdf', fd, { responseType: 'blob' })
+        const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+        const a = document.createElement('a'); a.href = url
+        a.download = `CoverLetter_${defaultFilename}.pdf`; a.click()
+        URL.revokeObjectURL(url)
+        toast.success('Cover letter PDF downloaded!')
+      } else {
+        const res = await api.post('/api/resume/render-docx', fd, { responseType: 'blob' })
+        const url = URL.createObjectURL(new Blob([res.data], {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        }))
+        const a = document.createElement('a'); a.href = url
+        a.download = `CoverLetter_${defaultFilename}.docx`; a.click()
+        URL.revokeObjectURL(url)
+        toast.success('Cover letter DOCX downloaded!')
+      }
+    } catch (err) {
+      toast.error(err.message || `Failed to download cover letter ${format.toUpperCase()}`)
+    } finally {
+      setClDownloading(null)
     }
   }
 
@@ -374,27 +494,60 @@ export default function ResumeResultPage() {
             </div>
           </div>
 
+          {/* Tab switcher — only show when cover letter is available */}
+          {coverLetterText && (
+            <div className="flex items-center bg-gray-100 rounded-lg p-0.5 shrink-0">
+              <button
+                onClick={() => setActiveTab('resume')}
+                className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors
+                  ${activeTab === 'resume' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <FileTextIcon className="w-3.5 h-3.5" /> Resume
+              </button>
+              <button
+                onClick={() => setActiveTab('cover_letter')}
+                className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md transition-colors
+                  ${activeTab === 'cover_letter' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <MailIcon className="w-3.5 h-3.5" /> Cover Letter
+              </button>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={handleToggleEdit}
-              title={isEditing ? 'Switch to preview' : 'Edit resume text'}
-              className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors
-                ${isEditing
-                  ? 'bg-brand-100 text-brand-700 hover:bg-brand-200'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-            >
-              {isEditing
-                ? <><EyeIcon className="w-3.5 h-3.5" /> Preview</>
-                : <><PencilIcon className="w-3.5 h-3.5" /> Edit</>}
-            </button>
-            <button onClick={handleCopy} title="Copy text"
-              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors">
-              <CopyIcon className="w-4 h-4" />
-            </button>
-            <button onClick={handlePrint} title="Print"
-              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors">
-              <PrinterIcon className="w-4 h-4" />
-            </button>
+            {activeTab === 'resume' && (
+              <>
+                <button
+                  onClick={handleToggleEdit}
+                  title={isEditing ? 'Switch to preview' : 'Edit resume text'}
+                  className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors
+                    ${isEditing
+                      ? 'bg-brand-100 text-brand-700 hover:bg-brand-200'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                >
+                  {isEditing
+                    ? <><EyeIcon className="w-3.5 h-3.5" /> Preview</>
+                    : <><PencilIcon className="w-3.5 h-3.5" /> Edit</>}
+                </button>
+                <button onClick={handleCopy} title="Copy resume text"
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+                  <CopyIcon className="w-4 h-4" />
+                </button>
+                <button onClick={handlePrint} title="Print"
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+                  <PrinterIcon className="w-4 h-4" />
+                </button>
+              </>
+            )}
+            {activeTab === 'cover_letter' && (
+              <button
+                onClick={() => { navigator.clipboard.writeText(coverLetterText); toast.success('Copied to clipboard!') }}
+                title="Copy cover letter text"
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+              >
+                <CopyIcon className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -439,59 +592,111 @@ export default function ResumeResultPage() {
           </div>
         )}
 
-        {/* ── Resume view: editor or paper preview ── */}
+        {/* ── Main view: resume editor/preview or cover letter preview ── */}
         <div className="rounded-2xl overflow-hidden shadow-sm border border-gray-200 flex flex-col" style={{ minHeight: '75vh' }}>
-          {isEditing ? (
-            <div
-              ref={editorRef}
-              contentEditable
-              suppressContentEditableWarning
-              onInput={() => { if (editorRef.current) setEditText(editorRef.current.innerText) }}
-              onKeyUp={syncFormatStates}
-              onMouseUp={syncFormatStates}
-              style={{ fontFamily, fontSize: `${fontSize}px` }}
-              className="flex-1 overflow-y-auto w-full min-h-[600px] px-12 py-10 bg-white text-gray-800 leading-relaxed outline-none"
-            />
+          {activeTab === 'resume' ? (
+            isEditing ? (
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={() => { if (editorRef.current) setEditText(editorRef.current.innerText) }}
+                onKeyUp={syncFormatStates}
+                onMouseUp={syncFormatStates}
+                style={{ fontFamily, fontSize: `${fontSize}px` }}
+                className="flex-1 overflow-y-auto w-full min-h-[600px] px-12 py-10 bg-white text-gray-800 leading-relaxed outline-none"
+              />
+            ) : (
+              <ResumeHtmlPreview text={editText} />
+            )
           ) : (
-            <ResumeHtmlPreview text={editText} />
+            <CoverLetterHtmlPreview text={coverLetterText} />
           )}
         </div>
 
         {/* ── Footer actions ── */}
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-6 py-4">
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="text-xs text-gray-400 min-w-0">
-              {savedType && savedFolder ? (
-                <span className="text-green-600 font-medium flex items-center gap-1">
-                  <CheckIcon className="w-3.5 h-3.5" />
-                  {savedType.toUpperCase()} saved to{' '}
-                  <span className="font-mono truncate max-w-[240px] inline-block align-bottom">{savedFolder}</span>
-                </span>
-              ) : (
-                <span>Edits are saved in this session. Click <strong>Save PDF</strong> or <strong>Save DOCX</strong> to export.</span>
-              )}
+          {activeTab === 'resume' ? (
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="text-xs text-gray-400 min-w-0">
+                {savedType && savedFolder && pendingSaveMode === 'resume' ? (
+                  <span className="text-green-600 font-medium flex items-center gap-1">
+                    <CheckIcon className="w-3.5 h-3.5" />
+                    {savedType.toUpperCase()} saved to{' '}
+                    <span className="font-mono truncate max-w-[240px] inline-block align-bottom">{savedFolder}</span>
+                  </span>
+                ) : (
+                  <span>Edits are saved in this session. Click <strong>Save PDF</strong> or <strong>Save DOCX</strong> to export.</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                <button onClick={() => handleSave('pdf', 'resume')} disabled={isSaving}
+                  className="btn-primary text-xs py-2 px-4 gap-1.5">
+                  {isSaving && pendingSaveFormat === 'pdf' && pendingSaveMode === 'resume'
+                    ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    : savedType === 'pdf' && pendingSaveMode === 'resume' ? <CheckIcon className="w-3.5 h-3.5" /> : <SaveIcon className="w-3.5 h-3.5" />}
+                  Save PDF
+                </button>
+                <button onClick={() => handleSave('docx', 'resume')} disabled={isSaving}
+                  className="btn-secondary text-xs py-2 px-4 gap-1.5">
+                  {isSaving && pendingSaveFormat === 'docx' && pendingSaveMode === 'resume'
+                    ? <span className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                    : savedType === 'docx' && pendingSaveMode === 'resume' ? <CheckIcon className="w-3.5 h-3.5" /> : <SaveIcon className="w-3.5 h-3.5" />}
+                  Save DOCX
+                </button>
+                <button onClick={handleDiscard}
+                  className="flex items-center gap-1.5 text-xs font-medium px-4 py-2 rounded-lg border border-gray-200 text-gray-500 hover:border-red-300 hover:text-red-500 hover:bg-red-50 transition-colors">
+                  <XIcon className="w-3.5 h-3.5" /> Discard
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0 flex-wrap">
-              <button onClick={() => handleSave('pdf')} disabled={isSaving}
-                className="btn-primary text-xs py-2 px-4 gap-1.5">
-                {isSaving && pendingSaveFormat === 'pdf'
-                  ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  : savedType === 'pdf' ? <CheckIcon className="w-3.5 h-3.5" /> : <SaveIcon className="w-3.5 h-3.5" />}
-                Save PDF
-              </button>
-              <button onClick={() => handleSave('docx')} disabled={isSaving}
-                className="btn-secondary text-xs py-2 px-4 gap-1.5">
-                {isSaving && pendingSaveFormat === 'docx'
-                  ? <span className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                  : savedType === 'docx' ? <CheckIcon className="w-3.5 h-3.5" /> : <SaveIcon className="w-3.5 h-3.5" />}
-                Save DOCX
-              </button>
-              <button onClick={handleDiscard}
-                className="flex items-center gap-1.5 text-xs font-medium px-4 py-2 rounded-lg border border-gray-200 text-gray-500 hover:border-red-300 hover:text-red-500 hover:bg-red-50 transition-colors">
-                <XIcon className="w-3.5 h-3.5" /> Discard
-              </button>
+          ) : (
+            /* Cover letter footer */
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="text-xs text-gray-400 min-w-0">
+                {savedType && savedFolder && pendingSaveMode === 'cover_letter' ? (
+                  <span className="text-green-600 font-medium flex items-center gap-1">
+                    <CheckIcon className="w-3.5 h-3.5" />
+                    Cover letter saved to{' '}
+                    <span className="font-mono truncate max-w-[240px] inline-block align-bottom">{savedFolder}</span>
+                  </span>
+                ) : (
+                  <span>Download your cover letter or save it to a folder.</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                {/* Direct browser downloads */}
+                <button
+                  onClick={() => handleDownloadCoverLetter('pdf')}
+                  disabled={clDownloading !== null}
+                  className="btn-primary text-xs py-2 px-4 gap-1.5"
+                >
+                  {clDownloading === 'pdf'
+                    ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    : <DownloadIcon className="w-3.5 h-3.5" />}
+                  Download PDF
+                </button>
+                <button
+                  onClick={() => handleDownloadCoverLetter('docx')}
+                  disabled={clDownloading !== null}
+                  className="btn-secondary text-xs py-2 px-4 gap-1.5"
+                >
+                  {clDownloading === 'docx'
+                    ? <span className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                    : <DownloadIcon className="w-3.5 h-3.5" />}
+                  Download DOCX
+                </button>
+                {/* Save to folder */}
+                <button
+                  onClick={() => handleSave('pdf', 'cover_letter')}
+                  disabled={isSaving}
+                  className="flex items-center gap-1.5 text-xs font-medium px-4 py-2 rounded-lg border border-gray-200 text-gray-600 hover:border-brand-300 hover:text-brand-700 hover:bg-brand-50 transition-colors"
+                >
+                  <SaveIcon className="w-3.5 h-3.5" /> Save to Folder
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
